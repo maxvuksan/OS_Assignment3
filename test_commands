@@ -1,0 +1,6 @@
+walkthrough... 
+https://www.cs.rpi.edu/~moorthy/Courses/os98/Pgms/socket.html
+
+sending a book to the server...
+
+nc localhost 1234 -i <delay> < file.txt
