@@ -64,7 +64,7 @@ void fileOutput(struct Node* head) {
   fclose(fp);
 }
 
-void insert(char* s, struct Node* book_head) {
+void* insert(char* s, struct Node* book_head) {
   // add node to the end of regular linked list
   struct Node* new_node = makeNode(s);
   end_list->next = new_node;
@@ -96,16 +96,16 @@ int check(int return_value, char* error_message) {
   return return_value;
 }
 
-void resolve_connection(int client_socket) {
-  
-}
+void resolve_connection(int client_socket) {}
 
 void* connection_thread() {}
 
 int main(int argc, char* argv[]) {
+  int BUFFER_SIZE = 1024;
   int port = 1234;
   int server_socket;
   int client_socket;
+  char buffer[BUFFER_SIZE] = {0};
 
   struct sockaddr_in server_address;
   struct sockaddr_in client_address;
@@ -131,15 +131,18 @@ int main(int argc, char* argv[]) {
   while (1) {
     address_size = sizeof(struct sockaddr_in);
     client_socket =
-        check(accept(server_socket, (struct sockaddr*)&client_address,
+        check(accept(server_socket, (struct sockaddr*)&server_address,
                      (socklen_t*)&address_size),
               "Failed to accept connection\n");
 
+    int readResult = check(read(server_socket, buffer, BUFFER_SIZE),
+                           "Failed to read from socket");
+
     // connection success. create new thread
-    pthread_t thread_id; 
-    pthread_create(&thread_id, NULL, insert, NULL); 
-    pthread_join(thread_id, NULL); 
-    printf("A new node was added to the list\n"); 
+    pthread_t thread_id;
+    pthread_create(&thread_id, NULL, insert, NULL);
+    pthread_join(thread_id, NULL);
+    printf("A new node was added to the list\n");
   }
 
   return 0;
