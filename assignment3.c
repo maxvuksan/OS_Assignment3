@@ -1,10 +1,22 @@
+#include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
+
+typedef struct sockaddr_in SA_IN;
+
+#define TRUE 1
+#define FALSE 0
+
+#define SERVER_PORT 12345
+
+pthread_t threads[100];
 
 struct Node* lookup_head;
 struct Node* end_list;
@@ -96,54 +108,15 @@ int check(int return_value, char* error_message) {
   return return_value;
 }
 
-void resolve_connection(int client_socket) {}
+void handle_connection(int client_socket) {}
 
 void* connection_thread() {}
 
-int main(int argc, char* argv[]) {
-  int BUFFER_SIZE = 1024;
-  int port = 1234;
-  int server_socket;
-  int client_socket;
-  char buffer[BUFFER_SIZE] = {0};
+main(int argc, char* argv[]) {
+  int server_socket, client_socket, addr_size;
+  SA_IN server_addr, client_addr;
 
-  struct sockaddr_in server_address;
-  struct sockaddr_in client_address;
-
-  // create server
-  // using TCP
-  server_socket =
-      check(socket(AF_INET, SOCK_STREAM, 0), "Failed creating server socket\n");
-
-  // initialize server struct
-  server_address.sin_family = AF_INET;
-  server_address.sin_addr.s_addr = INADDR_ANY;
-  server_address.sin_port = htons(port);
-
-  // bind server, then listen...
-  check(bind(server_socket, (struct sockaddr*)&server_address,
-             sizeof(server_address)),
-        "Failed binding server");
-  check(listen(server_socket, 1), "Failed to listen to server");
-
-  int address_size;
-
-  while (1) {
-    address_size = sizeof(struct sockaddr_in);
-    client_socket =
-        check(accept(server_socket, (struct sockaddr*)&server_address,
-                     (socklen_t*)&address_size),
-              "Failed to accept connection\n");
-
-    int readResult = check(read(server_socket, buffer, BUFFER_SIZE),
-                           "Failed to read from socket");
-
-    // connection success. create new thread
-    pthread_t thread_id;
-    pthread_create(&thread_id, NULL, insert, NULL);
-    pthread_join(thread_id, NULL);
-    printf("A new node was added to the list\n");
-  }
+  check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),)
 
   return 0;
 }
