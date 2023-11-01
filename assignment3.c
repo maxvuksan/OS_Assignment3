@@ -5,6 +5,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <unistd.h>
+#include <pthread.h>
+
+
 
 struct Node* lookup_head;
 struct Node* end_list;
@@ -81,6 +85,8 @@ void* insert(char* s, struct Node* book_head) {
   return;
 }
 
+#pragma endregion
+
 // call when a problem occurs
 void error(char* error_message) {
   perror(error_message);
@@ -96,54 +102,71 @@ int check(int return_value, char* error_message) {
   return return_value;
 }
 
-void resolve_connection(int client_socket) {}
+void* connection_thread(void* void_client_socket) {
+    int BUFFER_SIZE = 1024;
+    char buffer[BUFFER_SIZE];
 
-void* connection_thread() {}
+    int* client_socket = (int*) (void_client_socket);
+
+    int read_result = 1;
+    
+    while(read_result > 0){
+
+        read_result = check(read(*client_socket, buffer, BUFFER_SIZE), "Failed to read from socket");
+
+        printf("%s", buffer);
+
+        // clear the memory in the buffer
+        memset(buffer, 0, BUFFER_SIZE);
+    }
+}
+
+
+void resolve_connection(int client_socket) {
+    
+    pthread_t thread_id;
+
+    // create our new socket
+    pthread_create(&thread_id, NULL, connection_thread, &client_socket);
+
+    pthread_join(thread_id, NULL);
+}
+
 
 int main(int argc, char* argv[]) {
-  int BUFFER_SIZE = 1024;
-  int port = 1234;
-  int server_socket;
-  int client_socket;
-  char buffer[BUFFER_SIZE] = {0};
 
-  struct sockaddr_in server_address;
-  struct sockaddr_in client_address;
+    int port = 1234;
+    int server_socket;
+    int client_socket;
 
-  // create server
-  // using TCP
-  server_socket =
-      check(socket(AF_INET, SOCK_STREAM, 0), "Failed creating server socket\n");
+    struct sockaddr_in server_address;
+    struct sockaddr_in client_address;
 
-  // initialize server struct
-  server_address.sin_family = AF_INET;
-  server_address.sin_addr.s_addr = INADDR_ANY;
-  server_address.sin_port = htons(port);
+    // create server
+    // using TCP
+    server_socket = check(socket(AF_INET, SOCK_STREAM, 0), "Failed creating server socket\n");
 
-  // bind server, then listen...
-  check(bind(server_socket, (struct sockaddr*)&server_address,
-             sizeof(server_address)),
-        "Failed binding server");
-  check(listen(server_socket, 1), "Failed to listen to server");
+    // initialize server struct
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = INADDR_ANY;
+    server_address.sin_port = htons(port);
 
-  int address_size;
+    // bind server, then listen...
+    check(bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address)), "Failed binding server");
+    check(listen(server_socket, 1), "Failed to listen to server");
 
-  while (1) {
-    address_size = sizeof(struct sockaddr_in);
-    client_socket =
-        check(accept(server_socket, (struct sockaddr*)&server_address,
-                     (socklen_t*)&address_size),
-              "Failed to accept connection\n");
+    int address_size;
 
-    int readResult = check(read(server_socket, buffer, BUFFER_SIZE),
-                           "Failed to read from socket");
+    while (1) {
+        address_size = sizeof(struct sockaddr_in);
 
-    // connection success. create new thread
-    pthread_t thread_id;
-    pthread_create(&thread_id, NULL, insert, NULL);
-    pthread_join(thread_id, NULL);
-    printf("A new node was added to the list\n");
-  }
+        // accept() waiting for any incoming connections
+        client_socket = check(accept(server_socket, (struct sockaddr*)&server_address, (socklen_t*)&address_size), "Failed to accept connection\n");
+
+        resolve_connection(client_socket);
+    }
+
+
 
   return 0;
 }
