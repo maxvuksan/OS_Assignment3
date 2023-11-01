@@ -8,24 +8,22 @@
 #include <unistd.h>
 #include <pthread.h>
 
+/*
 
+#pragma region book_list
 
-struct Node* lookup_head;
-struct Node* end_list;
+struct Node* book_head;
 
 struct Node {
+  int book_index;
   char* data;
-  struct Node* book_next;
-  struct Node* next;
+  struct Node* book_next = NULL;
+  struct Node* next = NULL;
 };
 
-void listInit() {
-  lookup_head = makeNode("NOT A NODE");
-  end_list = makeNode("NOT A NODE");
-}
-
-struct Node* makeNode(char* s) {
+struct Node* make_node(char* s, int book_index) {
   struct Node* node = (struct Node*)malloc(sizeof(struct Node*));
+  node->book_index = book_index;
   node->data = s;
   node->book_next = NULL;
   node->next = NULL;
@@ -34,30 +32,30 @@ struct Node* makeNode(char* s) {
 }
 
 // save the whole book to a file
-void fileOutput(struct Node* head) {
-  // work out which number book this is
-  int i = 1;
-  struct Node* curr = lookup_head->next;
-  while (curr != head) {
+void file_output(int book_index) {
+
+  // finds the head of a book given its connection index
+  struct Node* curr = book_head;
+  while (curr->next != NULL && curr->book_index != book_index) {
     curr = curr->next;
-    i++;
   }
 
   char* filename = "book_";
-  if (i < 10) {
+  if (book_index < 10) {
     filename += '0';
   }
-  filename += itoa(i) + '.txt';
+  filename += itoa(book_index) + ".txt";
 
   // output every line in book to book_xx.txt
   FILE* fp = fopen(filename, "w");
   if (fp == NULL) {
     printf("Error opening the file %s", filename);
-    return -1;
+    return;
   }
 
-  // curr = pointer to
-  curr = head->book_next;
+ // writing book to file
+  fprintf(fp, "%s\n", curr->data);
+  curr = curr->book_next;
 
   while (curr != NULL) {
     char* line = curr->data;
@@ -68,9 +66,9 @@ void fileOutput(struct Node* head) {
   fclose(fp);
 }
 
-void* insert(char* s, struct Node* book_head) {
+void* insert(char* s, int book_index) {
   // add node to the end of regular linked list
-  struct Node* new_node = makeNode(s);
+  struct Node* new_node = make_node(s, book_index);
   end_list->next = new_node;
   end_list = new_node;
 
@@ -85,7 +83,9 @@ void* insert(char* s, struct Node* book_head) {
   return;
 }
 
+
 #pragma endregion
+*/
 
 // call when a problem occurs
 void error(char* error_message) {
@@ -102,38 +102,85 @@ int check(int return_value, char* error_message) {
   return return_value;
 }
 
-void* connection_thread(void* void_client_socket) {
+
+
+/*
+    assuming we have no more than 100 threads, we can define a static buffer to hold our thread objects, 
+    when a thread is located it will search down the array and find the next free space
+*/
+#define MAX_THREADS 100
+
+struct thread_state{
+    
+    int allocated = 0; // 1 if allocated
+    int complete = 0; // 1 if complete
+    int* book_index; // allocated by malloc and passed to thread
+    pthread_t thread_id;
+    int client_socket; // socket to read from (connection to client)
+};
+
+pthread_mutex_t thread_lock;
+int book_counter = 0;
+struct thread_state threads[MAX_THREADS];
+
+
+void* connection_thread(void* void_book_index) {
+
     int BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
-
-    int* client_socket = (int*) (void_client_socket);
+    int book_index = *((int*)(void_book_index));
 
     int read_result = 1;
-    
+   
     while(read_result > 0){
 
-        read_result = check(read(*client_socket, buffer, BUFFER_SIZE), "Failed to read from socket");
+        read_result = check(read(threads[book_index].client_socket, buffer, BUFFER_SIZE), "Failed to read from socket");
+    
+        if(read_result == 0){
+            break;
+        }
 
         printf("%s", buffer);
 
         // clear the memory in the buffer
         memset(buffer, 0, BUFFER_SIZE);
     }
-}
+    
 
+    // marking thread as complete
+    pthread_mutex_lock(&thread_lock);
+    
+    threads[book_index].complete = 1;
+    
+    pthread_mutex_unlock(&thread_lock);
+    
+    return NULL;
+}
 
 void resolve_connection(int client_socket) {
+
+    pthread_mutex_lock(&thread_lock);
+
+    threads[book_counter].allocated = 1;
+    threads[book_counter].complete = 0;
+    threads[book_counter].book_index = (int*)malloc(sizeof(int));
+    *threads[book_counter].book_index = book_counter;
+    threads[book_counter].client_socket = client_socket;
     
-    pthread_t thread_id;
+    // create our thread
+    pthread_create(&threads[book_counter].thread_id, NULL, connection_thread, (void*)threads[book_counter].book_index);
 
-    // create our new socket
-    pthread_create(&thread_id, NULL, connection_thread, &client_socket);
-
-    pthread_join(thread_id, NULL);
+    book_counter++;
+    
+    pthread_mutex_unlock(&thread_lock);
 }
+
 
 
 int main(int argc, char* argv[]) {
+
+
+    check(pthread_mutex_init(&thread_lock, NULL), "Thread mutex failed to create\n");
 
     int port = 1234;
     int server_socket;
@@ -164,7 +211,24 @@ int main(int argc, char* argv[]) {
         client_socket = check(accept(server_socket, (struct sockaddr*)&server_address, (socklen_t*)&address_size), "Failed to accept connection\n");
 
         resolve_connection(client_socket);
+
+
+        // iterating over each thread determining if we any are ready to join
+        for(int i = 0; i < MAX_THREADS; i++){
+            
+            // thread at index i exists and has finished running; join
+            if(threads[i].allocated == 1 && threads[i].complete == 1){
+                
+                printf("thread ended\n");
+                threads[i].allocated = 0;
+                threads[i].complete = 0;
+                free(threads[i].book_index);
+                pthread_join(threads[i].thread_id, NULL);
+            }
+        }
     }
+
+    pthread_mutex_destroy(&thread_lock); 
 
 
 
