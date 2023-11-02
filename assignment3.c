@@ -192,7 +192,7 @@ int main(int argc, char* argv[]) {
 
   struct sockaddr_in server_address;
 
-  int server_port = argv[2];
+  int server_port = atoi(argv[2]);
 
   // create server
   // using TCP
