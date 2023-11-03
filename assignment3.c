@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -6,45 +7,68 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <pthread.h>
 
-/*
+typedef struct Node* NodePtr;
 
-#pragma region book_list
+#define BUFFER_SIZE 1024
+#define MAX_THREADS 100
 
-struct Node* book_head;
+pthread_mutex_t thread_lock;
+
+struct thread_state {
+  int book_index;  // allocated by malloc and passed to thread
+  pthread_t thread_id;
+  pthread_t anaylis_thread_id; // only exists if search pattern != NULL
+  int client_socket;  // socket to read from (connection to client)
+};
+
+int book_counter;
+NodePtr book_starts[MAX_THREADS];
+
+NodePtr head;
+NodePtr end_list;
+
+char* search_pattern = NULL;
+
+int analysis_should_terminate = 0; // is set to 1 when the program terminates, tells the analysis thread to end 
+pthread_mutex_t pattern_count_lock; 
+int book_pattern_count[MAX_THREADS]; // how many times the search pattern occurs in each book
+
 
 struct Node {
   int book_index;
-  char* data;
-  struct Node* book_next = NULL;
-  struct Node* next = NULL;
+  char data[BUFFER_SIZE];
+  NodePtr book_next;
+  NodePtr next;
 };
 
-struct Node* make_node(char* s, int book_index) {
-  struct Node* node = (struct Node*)malloc(sizeof(struct Node*));
+NodePtr make_node(char* s, int book_index) {
+  NodePtr node = (NodePtr)malloc(sizeof(struct Node));
   node->book_index = book_index;
-  node->data = s;
+  strcpy(node->data, s);
   node->book_next = NULL;
   node->next = NULL;
 
   return node;
 }
 
+void list_init(void) {
+  head = make_node("NULL HEAD\n", -1);
+  end_list = head;
+
+  for (int i = 0; i < MAX_THREADS; i++) {
+    book_starts[i] = NULL;
+  }
+}
+
 // save the whole book to a file
-void file_output(int book_index) {
-
-  // finds the head of a book given its connection index
-  struct Node* curr = book_head;
-  while (curr->next != NULL && curr->book_index != book_index) {
-    curr = curr->next;
+void file_output(int book_index, NodePtr book_head) {
+  char filename[12];
+  if (book_index + 1 < 10) {
+    sprintf(filename, "book_0%d.txt", book_index + 1);
+  } else {
+    sprintf(filename, "book_%d.txt", book_index + 1);
   }
-
-  char* filename = "book_";
-  if (book_index < 10) {
-    filename += '0';
-  }
-  filename += itoa(book_index) + ".txt";
 
   // output every line in book to book_xx.txt
   FILE* fp = fopen(filename, "w");
@@ -53,39 +77,46 @@ void file_output(int book_index) {
     return;
   }
 
- // writing book to file
-  fprintf(fp, "%s\n", curr->data);
-  curr = curr->book_next;
+  // writing book to file
+  NodePtr curr = book_head;
 
   while (curr != NULL) {
-    char* line = curr->data;
-    fprintf(fp, "%s\n", line);
+    fprintf(fp, "%s", curr->data);
     curr = curr->book_next;
   }
 
   fclose(fp);
-}
-
-void* insert(char* s, int book_index) {
-  // add node to the end of regular linked list
-  struct Node* new_node = make_node(s, book_index);
-  end_list->next = new_node;
-  end_list = new_node;
-
-  // add node to the end of book
-  struct Node* curr = book_head;
-  while (curr->book_next != NULL) {
-    curr = curr->book_next;
-  }
-  // now curr is the last node of book before adding new node
-  curr->book_next = new_node;
 
   return;
 }
 
+void insert(char* s, int book_index, NodePtr book_head) {
+  // add node to the end of linked list
+  NodePtr new_node = make_node(s, book_index);
 
-#pragma endregion
-*/
+  pthread_mutex_lock(&thread_lock);
+
+  end_list->next = new_node;
+  end_list = new_node;
+
+  // if this is a new book, add this head to the vector
+  if (book_head == NULL) {
+    book_starts[book_index] = new_node;
+  } else {
+    // add node to the end of book. first find book head
+    NodePtr curr = book_starts[book_index];
+    // now curr is the book head. traverse to the end of the book
+    while (curr->book_next != NULL) {
+      curr = curr->book_next;
+    }
+    // now curr is the last node of the book. insert here
+    curr->book_next = new_node;
+  }
+
+  pthread_mutex_unlock(&thread_lock);
+
+  return;
+}
 
 // call when a problem occurs
 void error(char* error_message) {
@@ -103,134 +134,220 @@ int check(int return_value, char* error_message) {
 }
 
 
+void* analysis_thread(void* args){
 
-/*
-    assuming we have no more than 100 threads, we can define a static buffer to hold our thread objects, 
-    when a thread is located it will search down the array and find the next free space
-*/
-#define MAX_THREADS 100
+    while(analysis_should_terminate != 1){
 
-struct thread_state{
-    
-    int allocated = 0; // 1 if allocated
-    int complete = 0; // 1 if complete
-    int* book_index; // allocated by malloc and passed to thread
-    pthread_t thread_id;
-    int client_socket; // socket to read from (connection to client)
-};
+        // analysis interval 
+        sleep(3);
 
-pthread_mutex_t thread_lock;
-int book_counter = 0;
-struct thread_state threads[MAX_THREADS];
+        // prints the next largest book while books_printed < book_counter
+        int books_printed = 0;
 
+        pthread_mutex_lock(&pattern_count_lock);
+        pthread_mutex_lock(&thread_lock);
 
-void* connection_thread(void* void_book_index) {
+        // creating a local copy, enables us to mark printed counts as -1
+        int book_pattern_count_mutable[MAX_THREADS];
+        memcpy(book_pattern_count_mutable, book_pattern_count, sizeof(int) * MAX_THREADS);
+        
+        printf("-------------------\n");
+        
+        while(books_printed < book_counter){
 
-    int BUFFER_SIZE = 1024;
-    char buffer[BUFFER_SIZE];
-    int book_index = *((int*)(void_book_index));
+            int max_index = -1;
+            int max = -1;
 
-    int read_result = 1;
-   
-    while(read_result > 0){
+            for(int i = 0; i < MAX_THREADS; i++){
+                
+                if(book_pattern_count_mutable[i] == -1){
+                    continue;
+                }
 
-        read_result = check(read(threads[book_index].client_socket, buffer, BUFFER_SIZE), "Failed to read from socket");
-    
-        if(read_result == 0){
-            break;
+                if(book_pattern_count_mutable[i] >= max){
+                    max_index = i;
+                    max = book_pattern_count_mutable[i];
+                }
+            }
+
+            books_printed++;
+
+            if(max_index == -1){
+                continue;
+            }
+
+            printf("%d occurances in %s\n", book_pattern_count_mutable[max_index], book_starts[max_index]->data);
+            book_pattern_count_mutable[max_index] = -1;
+
         }
+        printf("-------------------\n");
 
-        printf("%s", buffer);
-
-        // clear the memory in the buffer
-        memset(buffer, 0, BUFFER_SIZE);
+        pthread_mutex_unlock(&thread_lock);
+        pthread_mutex_unlock(&pattern_count_lock);
+        
     }
-    
-
-    // marking thread as complete
-    pthread_mutex_lock(&thread_lock);
-    
-    threads[book_index].complete = 1;
-    
-    pthread_mutex_unlock(&thread_lock);
-    
     return NULL;
 }
 
-void resolve_connection(int client_socket) {
 
-    pthread_mutex_lock(&thread_lock);
+void update_pattern_count(char* data, int book_index){
 
-    threads[book_counter].allocated = 1;
-    threads[book_counter].complete = 0;
-    threads[book_counter].book_index = (int*)malloc(sizeof(int));
-    *threads[book_counter].book_index = book_counter;
-    threads[book_counter].client_socket = client_socket;
+    // we are not looking for a pattern
+    if(search_pattern == NULL){
+        return;
+    }
+
+
+    pthread_mutex_lock(&pattern_count_lock);
+
+    // increments how many times the string is found.
+
+    char* to_search = data;
+    while(to_search = strstr(to_search, search_pattern)){
+        
+        book_pattern_count[book_index]++;
+        to_search++;
+    }
     
-    // create our thread
-    pthread_create(&threads[book_counter].thread_id, NULL, connection_thread, (void*)threads[book_counter].book_index);
+    pthread_mutex_unlock(&pattern_count_lock);
 
-    book_counter++;
-    
-    pthread_mutex_unlock(&thread_lock);
 }
 
 
+void* connection_thread(void* args) {
+
+
+  // extract thread data from void argument
+  struct thread_state* thread_data;
+  thread_data = (struct thread_state*)args;
+
+  int socket = thread_data->client_socket;
+  int book_index = thread_data->book_index;
+
+  // buffer where client data will be read from
+  char buffer[BUFFER_SIZE];
+  int read_result;
+
+    // init pattern count
+    pthread_mutex_lock(&pattern_count_lock);
+    book_pattern_count[book_index] = 0;
+    pthread_mutex_unlock(&pattern_count_lock);
+
+  do {
+    read_result = check(recv(socket, buffer, BUFFER_SIZE - 1, 0),
+                        "Failed to read from socket");
+    insert(buffer, book_index, book_starts[book_index]);
+
+    update_pattern_count(buffer, book_index);
+
+    // print message for successfully added node
+    printf("Node added to book %d\n", book_index);
+
+    // clear the memory in the buffer
+    memset(buffer, 0, BUFFER_SIZE);
+  } while (read_result > 0);
+
+
+  pthread_mutex_lock(&thread_lock);
+  file_output(book_index, book_starts[book_index]);
+  pthread_mutex_unlock(&thread_lock);
+
+  close(socket);
+
+  return NULL;
+}
+
+void resolve_connection(int socket) {
+  struct thread_state* thread_args =
+      (struct thread_state*)malloc(sizeof(struct thread_state));
+
+  if (thread_args == NULL) {
+    perror("Failed to allocate memory for thread_args");
+    // Handle error and return if memory allocation fails
+    return;
+  }
+
+  pthread_mutex_lock(&thread_lock);
+  thread_args->book_index = book_counter++;
+  pthread_mutex_unlock(&thread_lock);
+
+  thread_args->client_socket = socket;
+
+  // create our thread
+  pthread_create(&thread_args->thread_id, NULL, connection_thread,
+                 (void*)thread_args);
+
+}
 
 int main(int argc, char* argv[]) {
+  book_counter = 0;
+  list_init();
 
+  check(pthread_mutex_init(&thread_lock, NULL),
+        "Thread mutex failed to create\n");
 
-    check(pthread_mutex_init(&thread_lock, NULL), "Thread mutex failed to create\n");
+  check(pthread_mutex_init(&pattern_count_lock, NULL),
+        "Pattern mutex failed to create\n");
 
-    int port = 1234;
-    int server_socket;
-    int client_socket;
+  int server_socket;
+  int client_socket;
 
-    struct sockaddr_in server_address;
-    struct sockaddr_in client_address;
+  struct sockaddr_in server_address;
 
-    // create server
-    // using TCP
-    server_socket = check(socket(AF_INET, SOCK_STREAM, 0), "Failed creating server socket\n");
+  int server_port = atoi(argv[2]);
+  if(argc > 4){
+    search_pattern = argv[4];
 
-    // initialize server struct
-    server_address.sin_family = AF_INET;
-    server_address.sin_addr.s_addr = INADDR_ANY;
-    server_address.sin_port = htons(port);
-
-    // bind server, then listen...
-    check(bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address)), "Failed binding server");
-    check(listen(server_socket, 1), "Failed to listen to server");
-
-    int address_size;
-
-    while (1) {
-        address_size = sizeof(struct sockaddr_in);
-
-        // accept() waiting for any incoming connections
-        client_socket = check(accept(server_socket, (struct sockaddr*)&server_address, (socklen_t*)&address_size), "Failed to accept connection\n");
-
-        resolve_connection(client_socket);
-
-
-        // iterating over each thread determining if we any are ready to join
-        for(int i = 0; i < MAX_THREADS; i++){
-            
-            // thread at index i exists and has finished running; join
-            if(threads[i].allocated == 1 && threads[i].complete == 1){
-                
-                printf("thread ended\n");
-                threads[i].allocated = 0;
-                threads[i].complete = 0;
-                free(threads[i].book_index);
-                pthread_join(threads[i].thread_id, NULL);
-            }
-        }
+    // -1 will represent no book in that location
+    // when a connection is created, we mark that book as
+    for(int i = 0; i < MAX_THREADS; i++){
+        book_pattern_count[i] = -1;
     }
+  }
 
-    pthread_mutex_destroy(&thread_lock); 
+  // create server
+  // using TCP
+  server_socket =
+      check(socket(AF_INET, SOCK_STREAM, 0), "Failed creating server socket\n");
 
+  // initialize server struct
+  server_address.sin_family = AF_INET;
+  server_address.sin_addr.s_addr = INADDR_ANY;
+  server_address.sin_port = htons(server_port);
 
+  // bind server, then listen...
+  check(bind(server_socket, (struct sockaddr*)&server_address,
+             sizeof(server_address)),
+        "Failed binding server");
+  check(listen(server_socket, 1), "Failed to listen to server");
+
+  int address_size;
+
+  int created_analysis_thread = 0;
+  pthread_t analysis_thread_t;
+
+  while (1) {
+    address_size = sizeof(struct sockaddr_in);
+
+    // accept() waiting for any incoming connections
+    client_socket =
+        check(accept(server_socket, (struct sockaddr*)&server_address,
+                     (socklen_t*)&address_size),
+              "Failed to accept connection\n");
+    resolve_connection(client_socket);
+    
+    // create analysis thread if we have a search pattern and it does not already exist
+    if(created_analysis_thread == 0 && search_pattern != NULL){
+        created_analysis_thread = 1;
+        pthread_create(&analysis_thread_t, NULL, analysis_thread, NULL);
+    }
+  }
+
+  analysis_should_terminate = 1;
+  pthread_join(analysis_thread_t, NULL);
+
+  pthread_mutex_destroy(&thread_lock);
+  pthread_mutex_destroy(&pattern_count_lock);
 
   return 0;
 }
